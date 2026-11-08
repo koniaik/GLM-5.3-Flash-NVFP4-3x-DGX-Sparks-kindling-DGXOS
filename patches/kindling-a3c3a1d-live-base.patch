@@ -1,0 +1,201 @@
+diff --git a/experimental/draft-trunc/draft_trunc.py b/experimental/draft-trunc/draft_trunc.py
+index 4d13329..ed490c3 100644
+--- a/experimental/draft-trunc/draft_trunc.py
++++ b/experimental/draft-trunc/draft_trunc.py
+@@ -29,7 +29,7 @@ from vllm.triton_utils import tl, triton
+ # The other files in this directory are whole copies of vLLM's, with the cut added. They
+ # match one vLLM commit, the image's VLLM_REF. On any other they would put back old code
+ # over new, so the engine stops instead.
+-VLLM_COMMIT = "ddd6fbca"
++VLLM_COMMIT = "52cb02dee"  # this fork: base nightly-dev 52cb02de (Sep 27), tree verified with the anchor battery
+ if f"+g{VLLM_COMMIT}" not in vllm.__version__:
+     raise RuntimeError(f"experimental/draft-trunc copies vLLM {VLLM_COMMIT}'s files, but this image runs "
+                        f"vLLM {vllm.__version__}. Refresh the copies from this image, or remove the "
+diff --git a/experimental/draft-trunc/model_runner.py b/experimental/draft-trunc/model_runner.py
+index 1951826..ec20521 100644
+--- a/experimental/draft-trunc/model_runner.py
++++ b/experimental/draft-trunc/model_runner.py
+@@ -642,7 +642,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+                 self.speculator, "enable_adaptive_verification", False
+             ),
+             attn_groups=self.attn_groups,
+-            attn_cg_support=attn_cg_support,
+             req_states=self.req_states,
+             query_start_loc=self.input_buffers.query_start_loc,
+             num_bonus_tokens=self.model_state.num_new_sampled_tokens_per_step,
+diff --git a/experimental/fixes/kv_cache_utils.py b/experimental/fixes/kv_cache_utils.py
+index d31b9ea..342e15b 100644
+--- a/experimental/fixes/kv_cache_utils.py
++++ b/experimental/fixes/kv_cache_utils.py
+@@ -3122,3 +3122,13 @@ def resolve_block_hashes(
+         return block_hashes
+     assert block_size % hash_block_size == 0
+     return BlockHashListWithBlockSize(block_hashes, hash_block_size, block_size)
++
++
++def to_event_extra_keys(
++    extra_keys: Iterable[tuple[Any, ...] | None] | None,
++) -> list[tuple[Any, ...] | None] | None:
++    """Backport from vllm v0.31.0 (this fork: block_pool imports it)."""
++    if not extra_keys:
++        return None
++    event_keys = [tuple(k) if k else None for k in extra_keys]
++    return event_keys
+diff --git a/image/Dockerfile b/image/Dockerfile
+index ad5595e..12df8a1 100644
+--- a/image/Dockerfile
++++ b/image/Dockerfile
+@@ -24,7 +24,6 @@
+ #     glm53_mtp_bf16.py             MTP layer is BF16 but config.json says NVFP4
+ #     sm90_fp8_kv_dtype.py          SM90 builder planned fp8 KV as uint8
+ #     glm53_reasoning_always_parsed.py  thinking off = low effort, still <think>
+-#     vllm-58720-routed-experts.patch  vllm#58720 (ad6817b), after this nightly
+ #     FlashKDA 17a037d              vllm#58846, still open: fp32 recurrent state
+ #   kept:
+ #     glm53-flash_SM121.py (MiaAI)  5 of 7 edits apply unchanged; see below
+@@ -115,8 +114,6 @@ RUN python3 /tmp/spin_wait.py && rm /tmp/spin_wait.py
+ # states, so without this `--speculative-config dflash` fails at load with
+ # "Model does not support EAGLE3 interface". Inert unless a drafter asks for
+ # aux layers. Only the target path changed from the vendor-base version.
+-COPY image/patches/glm53_eagle3_aux.py /tmp/glm53_eagle3_aux.py
+-RUN python3 /tmp/glm53_eagle3_aux.py && rm /tmp/glm53_eagle3_aux.py
+ 
+ # nvidia/GLM-5.3-Flash-NVFP4 stores its MTP layer (45) in BF16, but its
+ # config.json declares every Linear NVFP4 and does not list layer 45 in
+@@ -124,6 +121,9 @@ RUN python3 /tmp/glm53_eagle3_aux.py && rm /tmp/glm53_eagle3_aux.py
+ # in RoutedExperts._load_w2. This excludes the MTP layer from quantisation when
+ # the checkpoint holds no scales for it -- driven by the weights, so a
+ # checkpoint that does quantise its MTP layer is left alone.
++COPY image/patches/glm53_eagle3_aux.py /tmp/glm53_eagle3_aux.py
++RUN python3 /tmp/glm53_eagle3_aux.py && rm /tmp/glm53_eagle3_aux.py
++
+ COPY image/patches/glm53_mtp_bf16.py /tmp/glm53_mtp_bf16.py
+ RUN python3 /tmp/glm53_mtp_bf16.py && rm /tmp/glm53_mtp_bf16.py
+ 
+@@ -134,6 +134,11 @@ RUN python3 /tmp/glm53_mtp_bf16.py && rm /tmp/glm53_mtp_bf16.py
+ COPY image/patches/glm53_reasoning_always_parsed.py /tmp/glm53_reasoning_always_parsed.py
+ RUN python3 /tmp/glm53_reasoning_always_parsed.py && rm /tmp/glm53_reasoning_always_parsed.py
+ 
++# this fork's adaptation (v0.31.0-era base): kindling's fixes/kv_cache_utils.py imports 2
++# hisparse functions that upstream refactored out of layout.py; vendored from ddd6fbca
++COPY image/patches/glm53_hisparse_layout_addendum.py /tmp/glm53_hisparse_layout_addendum.py
++RUN python3 /tmp/glm53_hisparse_layout_addendum.py /usr/local/lib/python3.12/dist-packages/vllm/v1/hisparse/layout.py
++
+ # The kpool indexer's top-k returns the right pools in a run-dependent order and
+ # keeps a run-dependent subset of pools tied at the k-th score. The sparse MLA
+ # kernel sums keys in list order, so identical requests past 2048 tokens rounded
+@@ -142,15 +147,14 @@ RUN python3 /tmp/glm53_reasoning_always_parsed.py && rm /tmp/glm53_reasoning_alw
+ COPY image/patches/glm53_deterministic_topk.py /tmp/glm53_deterministic_topk.py
+ RUN python3 /tmp/glm53_deterministic_topk.py && rm /tmp/glm53_deterministic_topk.py
+ 
+-# vllm#58720 (ad6817b) landed after this nightly: RoutedExperts indexes the
+ # expert mapping by weight name once, instead of scanning it for every tensor.
+-COPY image/patches/vllm-58720-routed-experts.patch /tmp/
+-RUN cd /usr/local/lib/python3.12/dist-packages \
+- && patch -p1 --forward < /tmp/vllm-58720-routed-experts.patch \
+- && rm /tmp/vllm-58720-routed-experts.patch
+ 
+ COPY --from=flashkda /out/_flashkda_C.abi3.so /out/FLASHKDA_REF /usr/local/lib/python3.12/dist-packages/vllm/
+ 
++# this fork's adaptation: patch steps edited .py files AFTER __pycache__ was baked into
++# earlier layers; stale bytecode overrides newer sources. Force recompile on first import.
++RUN find /usr/local/lib/python3.12/dist-packages -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
++
+ # DFlash2's drafter adds five sliding-window attention layers, and the nightly's
+ # GLM-5-Next KV grouper gives up on any spec that is not MLA, so the model falls
+ # onto the generic path and dies in unify_kv_cache_spec_page_size ("page size is
+diff --git a/image/patches/glm53_hisparse_layout_addendum.py b/image/patches/glm53_hisparse_layout_addendum.py
+new file mode 100644
+index 0000000..e050fa7
+--- /dev/null
++++ b/image/patches/glm53_hisparse_layout_addendum.py
+@@ -0,0 +1,89 @@
++import sys
++from pathlib import Path
++
++# Uruchamiany W BUDZIE: dokleja 2 funkcje hisparse (z ery ddd6fbca) do layout.py v0.31.0.
++# Idempotent. Usage: python3 glm53_hisparse_layout_addendum.py <path to layout.py>
++
++add = (
++    "# this fork: two hisparse functions from the ddd6fbca era, missing from v0.31.0's layout.py\n"
++    "# (kindling's fixes/kv_cache_utils.py imports them; vendored from vllm@ddd6fbca)\n"
++    "try:\n"
++    "    from vllm.config import VllmConfig  # noqa: F401 (adnotacje)\n"
++    "except ImportError:\n"
++    "    VllmConfig = object\n"
++    "try:\n"
++    "    from vllm.v1.kv_cache_interface import KVCacheGroupSpec  # noqa: F401\n"
++    "except ImportError:\n"
++    "    KVCacheGroupSpec = object\n"
++    "\n"
++    "def get_hisparse_gpu_memory_usage(\n"
++    "    vllm_config: VllmConfig,\n"
++    "    kv_cache_groups: list[KVCacheGroupSpec],\n"
++    ") -> int:\n"
++    "    _, indexer_specs = _partition_hisparse_specs(kv_cache_groups)\n"
++    "    return sum(\n"
++    "        spec.max_memory_usage_bytes(vllm_config) for spec in indexer_specs.values()\n"
++    "    ) + sum(\n"
++    "        group.kv_cache_spec.max_memory_usage_bytes(vllm_config)\n"
++    "        for group in kv_cache_groups[1:]\n"
++    "    )\n"
++    "\n"
++    "def get_hisparse_kv_cache_config(\n"
++    "    vllm_config: VllmConfig,\n"
++    "    kv_cache_groups: list[KVCacheGroupSpec],\n"
++    "    available_memory: int,\n"
++    "    host_budget: int,\n"
++    "):\n"
++    "    from vllm.v1.kv_cache_interface import KVCacheConfig  # lazy (cykl modulow)\n"
++    "    from vllm.v1.core.kv_cache_utils import (\n"
++    "        _get_kv_cache_bytes_per_block,\n"
++    "        may_override_num_blocks,\n"
++    "        validate_kv_cache_layout,\n"
++    "    )\n"
++    "\n"
++    "    hisparse_layout = create_hisparse_layout(vllm_config, kv_cache_groups, host_budget)\n"
++    "    device_groups = hisparse_layout.device_groups\n"
++    "    layout = vllm_config.cache_config.get_resolved_kv_cache_layout()\n"
++    "    validate_kv_cache_layout(layout, device_groups)\n"
++    "    bytes_per_block = _get_kv_cache_bytes_per_block(\n"
++    "        device_groups,\n"
++    "        vllm_config.cache_config.block_size,\n"
++    "        use_mla=vllm_config.model_config.use_mla,\n"
++    "    )\n"
++    "    num_blocks = may_override_num_blocks(\n"
++    "        vllm_config, available_memory // bytes_per_block\n"
++    "    )\n"
++    "    num_gpu_blocks = num_blocks - hisparse_layout.host_pool_blocks\n"
++    "    return KVCacheConfig(\n"
++    "        num_blocks=num_blocks,\n"
++    "        kv_cache_groups=device_groups,\n"
++    "        kv_cache_tensors=hisparse_layout.kv_cache_tensors,\n"
++    "        vllm_config=vllm_config,\n"
++    "    )\n"
++)
++
++target = Path(sys.argv[1])
++s = target.read_text()
++if "nasza adaptacja: 2 funkcje hisparse" not in s:
++    target.write_text(s + "\n\n" + add)
++    print("[hisparse-addendum] appended to", target)
++else:
++    print("[hisparse-addendum] already applied to", target)
++
++# 2) re-eksport na KONCU kv_cache_utils (kv_transfer/decode_bench importuja z tego modulu)
++kcu = target.parent.parent / "core" / "kv_cache_utils.py"
++ks = kcu.read_text()
++reexport = (
++    "\n# this fork: re-export hisparse helpers (kv_transfer/decode_bench expect them here)\n"
++    "from vllm.v1.hisparse.layout import (  # noqa: E402\n"
++    "    get_hisparse_gpu_memory_usage,\n"
++    "    get_hisparse_host_pool_bytes,\n"
++    "    get_hisparse_kv_cache_config,\n"
++    "    get_hisparse_kv_cache_groups,\n"
++    ")\n"
++)
++if "re-eksport hisparse helpers" not in ks:
++    kcu.write_text(ks + reexport)
++    print("[hisparse-addendum] re-export appended to", kcu)
++else:
++    print("[hisparse-addendum] re-export already present")

@@ -63,7 +63,7 @@ wait_ready() {
 
 smoke() {
   local out
-  out=$(curl -s -m120 "$URL/v1/chat/completions" -H 'Content-Type: application/json' \
+  out=$(curl -s -m120 "$URL/v1/chat/completions" -H 'Content-Type: application/json' ${VLLM_API_KEY:+-H "Authorization: Bearer $VLLM_API_KEY"} \
     -d "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly: PING\"}],\"max_tokens\":512,\"chat_template_kwargs\":{\"enable_thinking\":false}}" \
     | python3 -c "import sys,json; d=json.load(sys.stdin); t=(d['choices'][0]['message'].get('content') or '').strip(); n=(d.get('usage') or {}).get('completion_tokens') or 0; print(t or ('<%d tokens, still thinking>' % n if n else ''))" 2>/dev/null)
   # kindling thinks briefly even with thinking off; 512 tokens, and generated tokens count as alive.
@@ -90,7 +90,8 @@ for attempt in 1 2; do
   log "rank order ok (WORKER2 = rank $r)"
   wait_ready || exit 1
   smoke || exit 1
-  log "READY: $(curl -s -m5 $URL/v1/models | python3 -c "import sys,json; print([m['id'] for m in json.load(sys.stdin)['data']])")"
+  log "READY: $(curl -s -m5 $URL/v1/models ${VLLM_API_KEY:+-H "Authorization: Bearer $VLLM_API_KEY"} | python3 -c "import sys,json; print([m['id'] for m in json.load(sys.stdin)['data']])")"
+
   exit 0
 done
 log "rank order still wrong after rewrite"; exit 1

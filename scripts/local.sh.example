@@ -1,0 +1,46 @@
+# Settings for YOUR three boxes. Copy this file to scripts/local.sh and edit it:
+#   cp scripts/local.sh.example scripts/local.sh
+# scripts/local.sh is sourced LAST (after config.sh), is meant to stay uncommitted,
+# and is the single place for cluster-specific values — the same pattern as the
+# MiaAI-Lab recipes. Everything below has a default; override only what differs.
+
+# ── REQUIRED ────────────────────────────────────────────────────────────────
+# The two workers, as ssh targets, addressed over the DIRECT ConnectX-7 links
+# (one hop, no LAN). Each cable carries two /24 subnets (one per PCIe root);
+# any of the two addresses a cable gives works — scripts/start.sh detects and
+# fixes the ring orientation automatically.
+# HOW TO FIND: on each box run
+#     ip -br addr | grep -E "np[01]"
+# and pick an address on a subnet shared with this head (a DIRECT link), e.g.
+# if the head shows 10.0.0.1 on one CX7 interface and a worker shows 10.0.0.2
+# on its CX7 interface — same subnet = same cable.
+WORKER1=user@10.0.0.2
+WORKER2=user@10.0.0.3
+
+# ── OPTIONAL (defaults shown) ────────────────────────────────────────────────
+# The head's LAN address as mentat and the .env writer should announce it.
+# Default: auto-detected as the source address of this box's default route
+# (works when the LAN interface owns the default route). Set it explicitly if
+# your box has multiple routes/VPNs and detection picks the wrong one.
+# HEAD_LAN_IP=10.0.0.1
+
+# Where the TP=3-padded checkpoints live — the SAME path on every box
+# (make_padded output; see README step 1). Either a local copy per box, or a
+# read-only NFS mount on the workers pointing at the head's directory.
+# Default: under your home directory.
+# MODEL_HOST_DIR=$HOME/models/glm53-nvfp4-tp3
+# DFLASH_HOST_DIR=$HOME/models/glm53-dflash2-tp3
+
+# The port the OpenAI API listens on. Default 8891 fits the "one shared GLM
+# port" convention (swap engines behind one URL); any free port works.
+# API_PORT=8891
+
+# The Bearer key the OpenAI API requires. This file is uncommitted, so a
+# secret is safe here (same treatment as HF tokens in the MiaAI-Lab recipes).
+# install-overlay.sh propagates it into the kindling compose/.env on all three
+# boxes. Unset = the engine serves with NO auth.
+# VLLM_API_KEY=sk-...
+
+# ── NOT HERE ────────────────────────────────────────────────────────────────
+# No secrets in any committed file. VLLM_API_KEY goes in the OPTIONAL section
+# above (this file stays uncommitted); install-overlay.sh does the plumbing.
